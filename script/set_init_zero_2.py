@@ -256,8 +256,8 @@ def configure_controller_mode(nodes: set[int]) -> None:
         time.sleep(0.002)
         send_set_vel_gains(
             node_id,
-            # vel_gain=0.16,
-            vel_gain=0.3,
+            vel_gain=0.16,
+            # vel_gain=0.3,
             vel_integrator_gain=0.0
         )
 
