@@ -1,39 +1,46 @@
-#!/home/minamikawa/odrive_test/.venv/bin/python3
+#!/home/scramble/odrive_test/.venv/bin/python3
 """
 ODrive command line utility
 """
 
-from __future__ import print_function
+import logging
 import sys
 
-if sys.version_info < (3, 6):
-    print("Your Python version (Python {}.{}) is too old. Please install Python 3.6 or newer.".format(
+if sys.version_info < (3, 7):
+    print("Your Python version (Python {}.{}) is too old. Please install Python 3.7 or newer.".format(
         sys.version_info.major, sys.version_info.minor
     ))
     exit(1)
 
-import asyncio
-import sys
-import os
 import argparse
-import tempfile
-import time
-import math
+import asyncio
+import os
 import platform
+import tempfile
 
-import odrive
-from odrive.utils import OperationAbortedException
-from fibre import Logger
+from odrive import __version__
+from odrive.device_manager import find_async
+from odrive.rich_text import RichText, to_vt100
+from odrive.ui import STYLE_BAD, STYLE_WARN, OperationAbortedException, RichTextPrinter
 
-# Flush stdout by default
-# Source:
-# https://stackoverflow.com/questions/230751/how-to-flush-output-of-python-print
-old_print = print
-def print(*args, **kwargs):
-    kwargs.pop('flush', False)
-    old_print(*args, **kwargs)
-    file = kwargs.get('file', sys.stdout)
-    file.flush() if file is not None else sys.stdout.flush()
+class ColoredFormatter(logging.Formatter):
+    def format(self, record):
+        formatted_msg = super().format(record)
+        if record.levelno >= logging.ERROR:
+            return to_vt100(RichText(formatted_msg, *STYLE_BAD))
+        elif record.levelno >= logging.WARNING:
+            return to_vt100(RichText(formatted_msg, *STYLE_WARN))
+        else:
+            return formatted_msg
+
+handler = logging.StreamHandler()
+formatter = ColoredFormatter("[%(levelname)s:%(name)s] %(message)s")
+handler.setFormatter(formatter)
+
+root_logger = logging.getLogger()
+root_logger.addHandler(handler)
+root_logger.setLevel(logging.INFO)
+
 
 script_path=os.path.dirname(os.path.realpath(__file__))
 
@@ -49,9 +56,13 @@ shell_parser.add_argument("--no-ipython", action="store_true",
                           help="Use the regular Python shell "
                           "instead of the IPython shell, "
                           "even if IPython is installed.")
+parser.add_argument('--name', default=[], nargs='+',
+                    help="User-specified names to be assigned to each ODrive. "
+                         "Example: --name left=385F324D3037 right=335037483432. "
+                         "Unnamed ODrives will be mounted as odrv0, odrv1, .... \n")
 
 # These two DFU commands are aliases except for the info message
-for command in ['dfu', 'legacy-dfu']:
+for command in ['new-dfu', 'dfu', 'legacy-dfu', 'install-bootloader']:
     dfu_parser = subparsers.add_parser(command, help="Upgrade the ODrive device firmware."
                                                 "If no serial number is specified, the first ODrive that is found is updated")
     dfu_parser.add_argument('file', nargs='?',
@@ -69,11 +80,18 @@ for command in ['dfu', 'legacy-dfu']:
     dfu_parser.add_argument('--version', action='store',
                             help='The version name to download. '
                             'Mutually exclusive with --channel.')
-    dfu_parser.add_argument('--no-erase-all', action='store_true',
-                            help='If specified, only those flash sectors occupied '
-                            'by the firmware will be erased. If not specified, all '
-                            'flash sectors (including non-volatile config) will be '
-                            'erased.')
+    if command != 'new-dfu': # Only valid for legacy-dfu
+        dfu_parser.add_argument('--no-erase-all', action='store_true',
+                                help='If specified, only those flash sectors occupied '
+                                'by the firmware will be erased. If not specified, all '
+                                'flash sectors (including non-volatile config) will be '
+                                'erased.')
+    else:
+        dfu_parser.add_argument('--erase-all', action='store_true',
+                                help='If specified, all flash sectors (including those '
+                                'containing non-volatile config) will be erased. '
+                                'If not specified, only those flash sectors occupied '
+                                'by the firmware will be erased.')
 
 unlock_parser = subparsers.add_parser('unlock', help="Try to remove read-out protection."
                                                "If no serial number is specified, the first ODrive that is found is unlocked")
@@ -89,7 +107,6 @@ restore_config_parser.add_argument('file', nargs='?',
                         "If no path is provided, the configuration is loaded from {}.".format(tempfile.gettempdir()))
 
 subparsers.add_parser('liveplotter', help="For plotting of odrive parameters (i.e. position) in real time")
-subparsers.add_parser('drv-status', help="Show status of the on-board DRV8301 chips (for debugging only)")
 subparsers.add_parser('rate-test', help="Estimate the average transmission bandwidth over USB")
 
 # General arguments
@@ -120,7 +137,7 @@ parser.add_argument("-v", "--verbose", action="store_true",
 parser.add_argument("--version", action="store_true",
                     help="print version information and exit")
 
-parser.set_defaults(path="usb:idVendor=0x1209,idProduct=0x0D32,bInterfaceClass=0,bInterfaceSubClass=1,bInterfaceProtocol=0")
+parser.set_defaults(path="usb")
 args = parser.parse_args()
 
 # Default command
@@ -128,44 +145,61 @@ if args.command is None:
     args.command = 'shell'
     args.no_ipython = False
 
-logger = Logger(verbose=args.verbose)
+logging.getLogger("odrive").setLevel(logging.DEBUG if args.verbose else logging.INFO)
+
+ui = RichTextPrinter()
 
 def print_version():
-    sys.stderr.write("ODrive control utility v" + odrive.__version__ + "\n")
+    sys.stderr.write("ODrive control utility v" + __version__ + "\n")
     sys.stderr.flush()
 
 if platform.system() == 'Linux':
     if not os.path.isfile('/etc/udev/rules.d/91-odrive.rules'):
-        logger.warn(
+        ui.warn(
             "Device permissions are not set up. Please exit odrivetool and run the following command: \n"
             "sudo bash -c \"curl https://cdn.odriverobotics.com/files/odrive-udev-rules.rules > /etc/udev/rules.d/91-odrive.rules && udevadm control --reload-rules && udevadm trigger\"\n"
             "otherwise your ODrive may not be recognized.")
 
-try:
+async def run_command():
     if args.version == True:
         print_version()
 
     elif args.command == 'shell':
         print_version()
-        if ".dev" in odrive.__version__:
-            print("")
-            logger.warn("Developer Preview")
-            print("  If you find issues, please report them")
-            print("  on https://github.com/odriverobotics/ODrive/issues")
-            print("  or better yet, submit a pull request to fix it.")
-            print("")
-        import odrive.shell
-        odrive.shell.launch_shell(args, logger)
+        from odrive.shell import launch_shell_from_args
+        from odrive.device_manager import get_device_manager
+        await launch_shell_from_args(args, get_device_manager())
 
-    elif args.command == 'dfu' or args.command == 'legacy-dfu':
+    elif args.command == 'new-dfu':
+        print_version()
+
+        from odrive.dfu import DfuError, dfu_ui
+        try:
+            if sum([bool(args.file), bool(args.channel), bool(args.version)]) > 1:
+                raise DfuError("Only one of firmware-file, --channel or --version must be specified.")
+            elif sum([bool(args.file), bool(args.channel), bool(args.version)]) == 0:
+                args.channel = 'master'
+
+            await dfu_ui(
+                serial_number=args.serial_number,
+                path=args.file,
+                channel=args.channel,
+                version=args.version,
+                erase_all=args.erase_all,
+            )
+        except DfuError as ex:
+            ui.error(str(ex))
+            return 1
+
+    elif args.command == 'dfu' or args.command == 'legacy-dfu' or args.command == 'install-bootloader':
         print_version()
 
         if args.command == 'dfu':
-            logger.warn("Try our new firmware update system!")
-            logger.warn("Supports firmware updates from the Web GUI and firmware updates via CAN bus.")
-            logger.warn("More info and migration instructions here: https://docs.odriverobotics.com/v/devel/guides/new-dfu.html.")
+            ui.warn("Try our new firmware update system!")
+            ui.warn("Supports firmware updates from the Web GUI and firmware updates via CAN bus.")
+            ui.warn("More info and migration instructions here: https://docs.odriverobotics.com/v/latest/guides/new-dfu.html.")
 
-        import odrive.dfu
+        from odrive.legacy_dfu import launch_dfu, DfuError
         try:
             if 'win32' in sys.platform:
                 # needed for subprocess support
@@ -173,69 +207,80 @@ try:
                 asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
             if sum([bool(args.file), bool(args.channel), bool(args.version)]) > 1:
-                raise odrive.dfu.DfuError("Only one of firmware-file, --channel or --version must be specified.")
+                raise DfuError("Only one of firmware-file, --channel or --version must be specified.")
             elif sum([bool(args.file), bool(args.channel), bool(args.version)]) == 0:
                 args.channel = 'master'
 
-            asyncio.run(odrive.dfu.launch_dfu(
+            await launch_dfu(
                 serial_number=args.serial_number,
                 path=args.file,
                 channel=args.channel,
                 version=args.version,
                 erase_all=not args.no_erase_all,
-                logger=logger))
-        except odrive.dfu.DfuError as ex:
-            logger.error(str(ex))
-            sys.exit(1)
+                installing_bootloader=args.command == 'install-bootloader',
+                release_type='bootloader' if args.command == 'install-bootloader' else 'firmware')
+        except DfuError as ex:
+            ui.error(str(ex))
+            return 1
 
     elif args.command == 'unlock':
         print_version()
-        import odrive.dfu
-        odrive.dfu.unlock_device(args.serial_number, None)
+        from odrive.dfu import unlock_device
+        unlock_device(args.serial_number, None)
 
     elif args.command == 'liveplotter':
-        from odrive.utils import start_liveplotter
+        from odrive.plotting import run_liveplotter
         print("Waiting for ODrive...")
-        my_odrive = odrive.find_any(path=args.path, serial_number=args.serial_number)
+        assert args.path == 'usb', f"not supported: {args.path}"
+        my_odrive = await find_async(serial_number=args.serial_number)
+
+        print("Showing plot. Press Ctrl+C or close plot to exit.")
 
         # If you want to plot different values, change them here.
         # You can plot any number of values concurrently.
-        cancellation_token = start_liveplotter(lambda: [
-            my_odrive.axis0.encoder.pos_estimate,
-            my_odrive.axis1.encoder.pos_estimate,
+        await run_liveplotter([
+            my_odrive.vbus_voltage,
+            my_odrive.axis0.pos_estimate,
+            my_odrive.axis0.vel_estimate,
         ])
-
-        print("Showing plot. Press Ctrl+C to exit.")
-        while not cancellation_token.is_set():
-            time.sleep(1)
-
-    elif args.command == 'drv-status':
-        from odrive.utils import print_drv_regs
-        print("Waiting for ODrive...")
-        my_odrive = odrive.find_any(path=args.path, serial_number=args.serial_number)
-        print_drv_regs("Motor 0", my_odrive.axis0.motor)
-        print_drv_regs("Motor 1", my_odrive.axis1.motor)
 
     elif args.command == 'rate-test':
         from odrive.utils import rate_test
         print("Waiting for ODrive...")
-        my_odrive = odrive.find_any(path=args.path, serial_number=args.serial_number)
-        rate_test(my_odrive)
+        assert args.path == 'usb', f"not supported: {args.path}"
+        my_odrive = await find_async(serial_number=args.serial_number)
+        await rate_test(my_odrive, mode='all')
 
     elif args.command == 'backup-config':
-        from odrive.legacy_config import backup_config
+        from odrive.legacy_config import backup_config_ui
         print("Waiting for ODrive...")
-        my_odrive = odrive.find_any(path=args.path, serial_number=args.serial_number)
-        backup_config(my_odrive, args.file, logger)
+        assert args.path == 'usb', f"not supported: {args.path}"
+        my_odrive = await find_async(serial_number=args.serial_number)
+        await backup_config_ui(my_odrive, args.file)
 
     elif args.command == 'restore-config':
-        from odrive.legacy_config import restore_config
+        from odrive.legacy_config import restore_config_ui
         print("Waiting for ODrive...")
-        my_odrive = odrive.find_any(path=args.path, serial_number=args.serial_number)
-        restore_config(my_odrive, args.file, logger)
+        assert args.path == 'usb', f"not supported: {args.path}"
+        my_odrive = await find_async(serial_number=args.serial_number)
+        await restore_config_ui(my_odrive, args.file)
 
     else:
         raise Exception("unknown command: " + args.command)
 
-except OperationAbortedException:
-    logger.info("Operation aborted.")
+    return 0
+
+async def main():
+    return await run_command()
+
+if __name__ == "__main__":
+    try:
+        exit_code = asyncio.run(main())
+    except KeyboardInterrupt:
+        ui.info("Operation aborted.")
+        exit_code = -2
+    except OperationAbortedException:
+        ui.info("Operation aborted.")
+        exit_code = -2
+
+sys.exit(exit_code)

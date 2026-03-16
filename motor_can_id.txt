@@ -1,0 +1,13 @@
+fl_j1, 0
+fr_j1, 1
+rl_j1, 2
+rr_j1, 3
+fl_j2, 4
+fr_j2, 5
+rl_j2, 6
+rr_j2, 7
+fl_j3, 8
+fr_j3, 9
+rl_j3, 10
+rr_j3, 11
+

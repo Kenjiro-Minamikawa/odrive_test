@@ -1,4 +1,4 @@
-#!/home/minamikawa/odrive_test/.venv/bin/python3
+#!/home/scramble/odrive_test/.venv/bin/python3
 # -*- coding: utf-8 -*-
 import re
 import sys
