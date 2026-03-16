@@ -68,9 +68,9 @@ latest = {
 
 def get_offset_rev(node_id: int) -> float:
     if node_id == 4:
-        return +0.67
+        return +0.57
     elif node_id == 5:
-        return -0.67
+        return -0.57
     elif node_id == 6:
         return +0.57
     elif node_id == 7:
@@ -83,14 +83,14 @@ def get_offset_rev(node_id: int) -> float:
         return -1.8
     elif node_id == 11:
         return +1.8
-    elif node_id == 0:
-        return +0.15
-    elif node_id == 1:
-        return -0.15
-    elif node_id == 2:
-        return -0.15
-    elif node_id == 3:
-        return +0.15
+    # elif node_id == 0:
+    #     return +0.15
+    # elif node_id == 1:
+    #     return -0.15
+    # elif node_id == 2:
+    #     return -0.15
+    # elif node_id == 3:
+    #     return +0.15
     return 0.0
 
 def send_set_axis_state(node_id: int, requested_state: int) -> None:
@@ -251,12 +251,13 @@ def configure_controller_mode(nodes: set[int]) -> None:
         time.sleep(0.002)
         send_set_pos_gain(
             node_id,
-            pos_gain=800.0
+            pos_gain=200.0
         )
         time.sleep(0.002)
         send_set_vel_gains(
             node_id,
-            vel_gain=0.16,
+            # vel_gain=0.16,
+            vel_gain=0.3,
             vel_integrator_gain=0.0
         )
 
