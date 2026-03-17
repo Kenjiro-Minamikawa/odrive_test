@@ -603,7 +603,8 @@ def main() -> None:
     chirp_signal = np.load("chirp_signal.npy")
 
     chirp_data = []
-    current_data = np.zeros(12, )
+    # 変更: (12関節, 2) の配列を用意。0列目が位置、1列目が速度。
+    current_data = np.zeros((12, 2))
 
     while True:
         msg = bus.recv(timeout=0.001)
@@ -614,7 +615,6 @@ def main() -> None:
         now = time.monotonic()
 
         if now - last_input >= INPUT_INTERVAL:
-            #print(f"dt: {now-last_input}")
             for node_id in NODE_IDS:
                 if node_id in {1}:
                     wave = 0.2 * chirp_signal[count % chirp_signal.shape[0]]
@@ -625,7 +625,6 @@ def main() -> None:
 
                 target_pos = latest[node_id]["initial_pos_rev"] + wave
                 if latest[node_id]["prepared"]:
-
                     send_set_input_pos(
                         node_id,
                         input_pos_rev=target_pos,
@@ -633,7 +632,11 @@ def main() -> None:
                         torque_ff_nm=0.0,
                     )
 
-                current_data[node_id] = latest[node_id]["pos_rev"] - latest[node_id]["initial_pos_rev"]
+                # 変更: 位置と速度の両方を記録
+                current_data[node_id, 0] = latest[node_id]["pos_rev"] - latest[node_id]["initial_pos_rev"]
+                # 速度が None の場合のフェイルセーフ
+                vel = latest[node_id]["vel_rev_s"]
+                current_data[node_id, 1] = vel if vel is not None else 0.0
 
             chirp_data.append(current_data.copy())
 
@@ -644,8 +647,9 @@ def main() -> None:
                 print_counter = 0
                 print_table()
 
-            if count % chirp_signal.shape[0] :
+            if count >= chirp_signal.shape[0]:
                 np.save("real_chirp_data.npy", np.array(chirp_data))
+                print(f"[INFO]: Finished 1 cycle. Saved {count} steps.")
 
 
 if __name__ == "__main__":
