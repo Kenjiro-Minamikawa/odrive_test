@@ -1,20 +1,21 @@
 import can
 import struct
 import time
+import math
 
 INTERFACE = "socketcan"
 CHANNEL = "can0"
 NODE_IDS = set(range(12))   # 0..11
 
 PRINT_INTERVAL = 0.2
-CAPTURE_TIMEOUT = 3.0
+CAPTURE_TIMEOUT = 0.5
 CLOSED_LOOP_TIMEOUT = 3.0
 MAX_DRAIN = 200
 
 REQUIRE_ALL_NODES = True
 
-ENCODER_FRESH_SEC = 0.3
-HEARTBEAT_FRESH_SEC = 0.5
+ENCODER_FRESH_SEC = 0.1
+HEARTBEAT_FRESH_SEC = 0.3
 REBOOT_SETTLE_SEC = 2.0
 POST_CLOSED_LOOP_WAIT_SEC = 0.3
 
@@ -39,6 +40,9 @@ INPUT_MODE_PASSTHROUGH = 1
 
 RAMP_DT_SEC = 0.05
 RAMP_DURATION_SEC = 5.0
+
+REV_PER_RAD = 4 / math.pi
+RAD_PER_REV = math.pi / 4
 
 init_poss = [-7.2356, -0.2882, -4.9643, -7.2440, 
              -4.3099, -4.193, -5.2545, -3.2615,
@@ -516,8 +520,8 @@ def prepare_targets_from_current_positions(
 def print_table() -> None:
     print("\n" + "=" * 132)
     print(
-        f"{'node':>4} | {'init [rev]':>12} | {'pos [rev]':>12} | {'target [rev]':>12} | "
-        f"{'vel [rev/s]':>12} | {'prep':>5} | {'state':>5} | {'error':>10} | {'enc_age':>8} | {'hb_age':>8}"
+        f"{'node':>4} | {'init [rad]':>12} | {'pos [rad]':>12} | {'target [rad]':>12} | "
+        f"{'vel [rad/s]':>12} | {'prep':>5} | {'state':>5} | {'error':>10} | {'enc_age':>8} | {'hb_age':>8}"
     )
     print("-" * 132)
 
@@ -526,10 +530,10 @@ def print_table() -> None:
     for node_id in sorted(NODE_IDS):
         item = latest[node_id]
 
-        init_str = f"{item['initial_pos_rev']:.4f}" if item["initial_pos_rev"] is not None else "---"
-        pos_str = f"{item['pos_rev']:.4f}" if item["pos_rev"] is not None else "---"
-        tgt_str = f"{item['target_pos_rev']:.4f}" if item["target_pos_rev"] is not None else "---"
-        vel_str = f"{item['vel_rev_s']:.4f}" if item["vel_rev_s"] is not None else "---"
+        init_str = f"{item['initial_pos_rev']*RAD_PER_REV:.4f}" if item["initial_pos_rev"] is not None else "---"
+        pos_str = f"{(item['pos_rev']-item['initial_pos_rev'])*RAD_PER_REV:.4f}" if item["pos_rev"] is not None else "---"
+        tgt_str = f"{item['target_pos_rev']*RAD_PER_REV:.4f}" if item["target_pos_rev"] is not None else "---"
+        vel_str = f"{item['vel_rev_s']*RAD_PER_REV:.4f}" if item["vel_rev_s"] is not None else "---"
         prepared_str = "yes" if item["prepared"] else "no"
         state_str = str(item["axis_state"]) if item["axis_state"] is not None else "---"
         error_str = hex(item["axis_error"]) if item["axis_error"] is not None else "---"
